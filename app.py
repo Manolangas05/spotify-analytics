@@ -4,17 +4,28 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
+from sklearn.metrics.pairwise import euclidean_distances
 
 st.set_page_config(page_title="Spotify Analytics", layout="wide")
 
 @st.cache_data
-def load_data():
+def load_spotify():
     df = pd.read_csv("data/dataset.csv", index_col=0)
     df = df.dropna(subset=["artists", "album_name", "track_name"])
     df = df.drop_duplicates(subset=["track_id"])
     return df
 
-df = load_data()
+@st.cache_data
+def load_billboard():
+    df = pd.read_csv("data/charts.csv")
+    df["date"] = pd.to_datetime(df["date"])
+    df["year"] = df["date"].dt.year
+    df = df[(df["year"] >= 1990) & (df["year"] <= 2020)]
+    df["period"] = df["date"].dt.to_period("M")
+    return df
+
+df = load_spotify()
+bb = load_billboard()
 
 audio_features = [
     "danceability", "energy", "loudness", "speechiness",
@@ -34,10 +45,9 @@ if not selected_genres:
 
 df_f = df[df["track_genre"].isin(selected_genres)]
 df_f = df_f[(df_f["popularity"] >= min_pop) & (df_f["popularity"] <= max_pop)]
-
 st.markdown(f"**{len(df_f):,} canciones** con los filtros actuales.")
 
-tab1, tab2, tab3, tab4 = st.tabs(["EDA", "PCA", "Espectral", "Distancia de edición"])
+tab1, tab2, tab3, tab4 = st.tabs(["EDA", "PCA", "Espectral", "Similitud entre géneros"])
 
 with tab1:
     col1, col2 = st.columns(2)
@@ -55,9 +65,12 @@ with tab1:
     with col2:
         st.subheader("Popularidad promedio por género")
         pop_genre = df_f.groupby("track_genre")["popularity"].mean().sort_values()
-        fig, ax = plt.subplots(figsize=(5, 3))
+        n = len(pop_genre)
+        fig_h = max(3, n * 0.25)
+        fig, ax = plt.subplots(figsize=(5, fig_h))
         ax.barh(pop_genre.index, pop_genre.values)
         ax.set_xlabel("Popularidad promedio")
+        ax.tick_params(axis="y", labelsize=max(5, min(9, int(120 / n))))
         plt.tight_layout()
         st.pyplot(fig)
         plt.close()
@@ -80,7 +93,6 @@ with tab2:
 
     scaler = StandardScaler()
     X = scaler.fit_transform(df_f[audio_features].values)
-
     pca = PCA(n_components=min(9, len(audio_features)))
     X_pca = pca.fit_transform(X)
 
@@ -106,9 +118,8 @@ with tab2:
             index=audio_features,
             columns=[f"PC{i+1}" for i in range(len(exp_var))]
         )
-        threshold = 0.3
         for col in loadings.columns:
-            important = loadings[col][loadings[col].abs() >= threshold].index.tolist()
+            important = loadings[col][loadings[col].abs() >= 0.3].index.tolist()
             if important:
                 st.markdown(f"**{col}**: {', '.join(important)}")
 
@@ -126,20 +137,32 @@ with tab2:
     plt.close()
 
 with tab3:
-    st.subheader("Análisis espectral — popularidad promedio por género")
+    st.subheader("Análisis espectral — Billboard Hot 100 (1990–2020)")
+    st.markdown("Serie mensual del promedio de semanas que las canciones permanecen en el chart. Refleja cómo cambia la longevidad de los hits a lo largo del tiempo.")
 
-    serie = df.groupby("track_genre")["popularity"].mean().sort_values().reset_index()
-    y = serie["popularity"].values
+    variable_bb = st.selectbox(
+        "Variable a analizar",
+        ["weeks-on-board", "rank"],
+        format_func=lambda x: "Semanas en el chart" if x == "weeks-on-board" else "Posición promedio"
+    )
+
+    serie = bb.groupby("period")[variable_bb].mean().reset_index()
+    serie.columns = ["period", "valor"]
+    y = serie["valor"].values
     T = len(y)
     t = np.arange(T)
+    fechas = [str(p) for p in serie["period"]]
 
     col1, col2 = st.columns(2)
 
     with col1:
         fig, ax = plt.subplots(figsize=(5, 3))
         ax.plot(t, y)
-        ax.set_ylabel("Popularidad promedio")
-        ax.set_title("Serie de popularidad por género")
+        tick_step = max(1, T // 8)
+        ax.set_xticks(t[::tick_step])
+        ax.set_xticklabels(fechas[::tick_step], rotation=45, ha="right", fontsize=7)
+        ax.set_ylabel(variable_bb)
+        ax.set_title("Serie temporal mensual")
         plt.tight_layout()
         st.pyplot(fig)
         plt.close()
@@ -150,16 +173,26 @@ with tab3:
         amplitude = np.abs(Y) / T
         half = T // 2
         fig, ax = plt.subplots(figsize=(5, 3))
-        ax.plot(freqs[:half], amplitude[:half])
-        ax.set_xlabel("Frecuencia")
+        ax.plot(freqs[1:half], amplitude[1:half])
+        ax.set_xlabel("Frecuencia (ciclos/mes)")
         ax.set_ylabel("Amplitud")
         ax.set_title("Espectro de amplitud")
         plt.tight_layout()
         st.pyplot(fig)
         plt.close()
 
+    top5_idx = np.argsort(amplitude[1:half])[::-1][:5] + 1
+    st.markdown("**Componentes dominantes detectadas:**")
+    rows = []
+    for i in top5_idx:
+        periodo = 1 / freqs[i]
+        rows.append({"Frecuencia": round(freqs[i], 5),
+                     "Periodo (meses)": round(periodo, 1),
+                     "Amplitud": round(amplitude[i], 4)})
+    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
     n_comp = st.slider("Componentes para reconstruir", 1, 10, 5)
-    idx = np.argsort(amplitude[:half])[::-1][1:n_comp+1]
+    idx = np.argsort(amplitude[1:half])[::-1][:n_comp] + 1
     trend = np.polyval(np.polyfit(t, y, 1), t)
     y_rec = trend.copy()
     for i in idx:
@@ -169,47 +202,74 @@ with tab3:
     ax.plot(t, y, label="Original", alpha=0.7)
     ax.plot(t, y_rec, label="Reconstruida", linestyle="--")
     ax.plot(t, trend, label="Tendencia", linestyle=":")
-    ax.set_ylabel("Popularidad promedio")
+    tick_step = max(1, T // 8)
+    ax.set_xticks(t[::tick_step])
+    ax.set_xticklabels(fechas[::tick_step], rotation=45, ha="right", fontsize=7)
+    ax.set_ylabel(variable_bb)
     ax.legend()
     plt.tight_layout()
     st.pyplot(fig)
     plt.close()
 
 with tab4:
-    st.subheader("Distancia de edición entre géneros")
+    st.subheader("Similitud entre géneros basada en features de audio")
+    st.markdown("Centroide de cada género en el espacio PCA. La distancia euclidiana entre centroides indica qué tan similares son sus características de audio.")
 
-    def edit_distance(s1, s2):
-        m, n = len(s1), len(s2)
-        L = np.zeros((m+1, n+1), dtype=int)
-        for i in range(m+1):
-            L[i, 0] = i
-        for j in range(n+1):
-            L[0, j] = j
-        for i in range(1, m+1):
-            for j in range(1, n+1):
-                f = 0 if s1[i-1] == s2[j-1] else 1
-                L[i, j] = min(L[i-1, j]+1, L[i, j-1]+1, L[i-1, j-1]+f)
-        return L, L[m, n]
+    scaler_all = StandardScaler()
+    X_all = scaler_all.fit_transform(df[audio_features].values)
+    pca_all = PCA(n_components=2)
+    X_pca_all = pca_all.fit_transform(X_all)
+
+    genre_labels = df["track_genre"].values
+    genres_all = sorted(df["track_genre"].unique())
+
+    centroids = {g: X_pca_all[genre_labels == g].mean(axis=0) for g in genres_all}
+    centroid_df = pd.DataFrame(centroids).T
+    dist_matrix = pd.DataFrame(
+        euclidean_distances(centroid_df.values),
+        index=genres_all, columns=genres_all
+    )
+
+    ref_genre = st.selectbox("Género de referencia", genres_all, index=0)
+    distances = dist_matrix[ref_genre].drop(ref_genre).sort_values()
+    top_similar = distances.head(10)
+    top_different = distances.tail(10).sort_values(ascending=False)
 
     col1, col2 = st.columns(2)
-    g1 = col1.selectbox("Género 1", all_genres, index=0)
-    g2 = col2.selectbox("Género 2", all_genres, index=1)
 
-    L, dist = edit_distance(g1, g2)
-    st.markdown(f"**Distancia de edición entre '{g1}' y '{g2}': {dist}**")
+    with col1:
+        st.markdown(f"**10 géneros más similares a {ref_genre}**")
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.barh(top_similar.index[::-1], top_similar.values[::-1])
+        ax.set_xlabel("Distancia euclidiana")
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close()
 
-    row_idx = ["-"] + [f"{c}{i}" if list(g1).count(c) > 1 else c for i, c in enumerate(g1)]
-    col_idx = ["-"] + [f"{c}{i}" if list(g2).count(c) > 1 else c for i, c in enumerate(g2)]
-    df_matrix = pd.DataFrame(L, index=row_idx, columns=col_idx)
-    st.dataframe(df_matrix.astype(str))
+    with col2:
+        st.markdown(f"**10 géneros más distintos a {ref_genre}**")
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.barh(top_different.index[::-1], top_different.values[::-1])
+        ax.set_xlabel("Distancia euclidiana")
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close()
 
-    st.markdown("---")
-    st.subheader("Matriz de distancias entre géneros seleccionados")
-    genres_to_compare = st.multiselect("Géneros a comparar", all_genres, default=all_genres[:8])
-    if len(genres_to_compare) >= 2:
-        dist_matrix = pd.DataFrame(index=genres_to_compare, columns=genres_to_compare)
-        for ga in genres_to_compare:
-            for gb in genres_to_compare:
-                _, d = edit_distance(ga, gb)
-                dist_matrix.loc[ga, gb] = d
-        st.dataframe(dist_matrix.astype(int))
+    st.markdown("**Mapa de centroides en espacio PC1 vs PC2**")
+    highlight = st.multiselect("Resaltar géneros", genres_all, default=[ref_genre])
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for g in genres_all:
+        x, yc = centroids[g]
+        if g in highlight:
+            ax.scatter(x, yc, color="red", s=80, zorder=5)
+            ax.annotate(g, (x, yc), fontsize=7, color="red",
+                        xytext=(4, 4), textcoords="offset points")
+        else:
+            ax.scatter(x, yc, color="steelblue", s=20, alpha=0.5)
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC2")
+    ax.set_title("Centroides de géneros")
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close()
