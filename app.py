@@ -203,7 +203,7 @@ with tab4:
         index=["-"] + list(g1),
         columns=["-"] + list(g2)
     )
-    st.dataframe(df_matrix)
+   st.dataframe(df_matrix.astype(str))
 
     st.markdown("---")
     st.subheader("Matriz de distancias entre géneros seleccionados")
