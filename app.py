@@ -198,12 +198,10 @@ with tab4:
     L, dist = edit_distance(g1, g2)
     st.markdown(f"**Distancia de edición entre '{g1}' y '{g2}': {dist}**")
 
-    df_matrix = pd.DataFrame(
-        L,
-        index=["-"] + list(g1),
-        columns=["-"] + list(g2)
-    )
-   st.dataframe(df_matrix.astype(str))
+    row_idx = ["-"] + [f"{c}{i}" if list(g1).count(c) > 1 else c for i, c in enumerate(g1)]
+    col_idx = ["-"] + [f"{c}{i}" if list(g2).count(c) > 1 else c for i, c in enumerate(g2)]
+    df_matrix = pd.DataFrame(L, index=row_idx, columns=col_idx)
+    st.dataframe(df_matrix.astype(str))
 
     st.markdown("---")
     st.subheader("Matriz de distancias entre géneros seleccionados")
