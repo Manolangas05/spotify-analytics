@@ -2,9 +2,12 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import euclidean_distances
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
 st.set_page_config(page_title="Spotify Analytics", layout="wide")
 
@@ -47,7 +50,7 @@ df_f = df[df["track_genre"].isin(selected_genres)]
 df_f = df_f[(df_f["popularity"] >= min_pop) & (df_f["popularity"] <= max_pop)]
 st.markdown(f"**{len(df_f):,} canciones** con los filtros actuales.")
 
-tab1, tab2, tab3, tab4 = st.tabs(["EDA", "PCA", "Espectral", "Similitud entre géneros"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["EDA", "PCA", "Espectral", "Similitud entre géneros", "Clasificación"])
 
 with tab1:
     col1, col2 = st.columns(2)
@@ -182,9 +185,10 @@ with tab3:
         plt.close()
 
     top5_idx = np.argsort(amplitude[1:half])[::-1][:5] + 1
+    top5_phases = np.angle(Y[top5_idx])
     st.markdown("**Componentes dominantes detectadas:**")
     rows = []
-    for i in top5_idx:
+    for i, phi in zip(top5_idx, top5_phases):
         periodo = 1 / freqs[i]
         rows.append({"Frecuencia": round(freqs[i], 5),
                      "Periodo (meses)": round(periodo, 1),
@@ -193,10 +197,11 @@ with tab3:
 
     n_comp = st.slider("Componentes para reconstruir", 1, 10, 5)
     idx = np.argsort(amplitude[1:half])[::-1][:n_comp] + 1
+    idx_phases = np.angle(Y[idx])
     trend = np.polyval(np.polyfit(t, y, 1), t)
     y_rec = trend.copy()
-    for i in idx:
-        y_rec += amplitude[i] * np.cos(2 * np.pi * freqs[i] * t)
+    for i, phi in zip(idx, idx_phases):
+        y_rec += 2 * amplitude[i] * np.cos(2 * np.pi * freqs[i] * t + phi)
 
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(t, y, label="Original", alpha=0.7)
@@ -273,3 +278,55 @@ with tab4:
     plt.tight_layout()
     st.pyplot(fig)
     plt.close()
+
+with tab5:
+    st.subheader("Clasificación de género — Naive Bayes Multinomial")
+    st.markdown("Predicción del género a partir de las features de audio, escaladas a [0, 1] (MultinomialNB requiere valores no negativos).")
+
+    if len(selected_genres) < 2:
+        st.warning("Selecciona al menos 2 géneros para clasificar.")
+    else:
+        X_clf = df_f[audio_features].values
+        y_clf = df_f["track_genre"].values
+
+        scaler_clf = MinMaxScaler()
+        X_clf_scaled = scaler_clf.fit_transform(X_clf)
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_clf_scaled, y_clf, test_size=0.2, random_state=42, stratify=y_clf
+        )
+
+        model = MultinomialNB()
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+
+        acc = accuracy_score(y_test, y_pred)
+        st.metric("Accuracy", f"{acc:.3f}")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("**Reporte de clasificación**")
+            report = classification_report(y_test, y_pred, output_dict=True)
+            st.dataframe(pd.DataFrame(report).T.round(3), use_container_width=True)
+
+        with col2:
+            st.markdown("**Matriz de confusión**")
+            labels = sorted(set(y_clf))
+            cm = confusion_matrix(y_test, y_pred, labels=labels)
+            fig, ax = plt.subplots(figsize=(5, 4))
+            im = ax.imshow(cm, cmap="Blues")
+            ax.set_xticks(range(len(labels)))
+            ax.set_yticks(range(len(labels)))
+            ax.set_xticklabels(labels, rotation=90, fontsize=7)
+            ax.set_yticklabels(labels, fontsize=7)
+            ax.set_xlabel("Predicho")
+            ax.set_ylabel("Real")
+            plt.colorbar(im, ax=ax)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close()
+
+        st.markdown("**Log-probabilidad de cada feature por género**")
+        feat_prob = pd.DataFrame(model.feature_log_prob_, index=model.classes_, columns=audio_features)
+        st.dataframe(feat_prob.round(3), use_container_width=True)
