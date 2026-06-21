@@ -286,8 +286,8 @@ with tab5:
     if len(selected_genres) < 2:
         st.warning("Selecciona al menos 2 géneros para clasificar.")
     else:
-        X_clf = df_f[audio_features].values
-        y_clf = df_f["track_genre"].values
+        X_clf = df_f[audio_features].to_numpy(dtype=float)
+        y_clf = df_f["track_genre"].astype(str).to_numpy()
 
         scaler_clf = MinMaxScaler()
         X_clf_scaled = scaler_clf.fit_transform(X_clf)
